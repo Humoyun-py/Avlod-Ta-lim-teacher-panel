@@ -483,11 +483,46 @@ export const INITIAL_SUBMISSIONS: HomeworkSubmission[] = [
     student_name: 'Javohir Toshmatov',
     student_code: 'AVL-2026-0101',
     submitted_at: '2026-10-15 19:40',
-    file_name: 'javohir_singleton_pool.zip',
+    file_name: 'singleton_db_pool.py',
+    code_language: 'python',
+    code_content: `import threading
+import time
+
+class SingletonDatabasePool:
+    """Thread-safe Singleton implementation for Database Connection Pool"""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, max_connections: int = 10):
+        if not cls._instance:
+            with cls._lock:
+                if not cls._instance:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialize_pool(max_connections)
+        return cls._instance
+
+    def _initialize_pool(self, max_connections: int):
+        self.max_connections = max_connections
+        self.active_connections = 0
+        self.is_connected = True
+        print(f"[Pool Initialized] Max connections: {max_connections}")
+
+    def acquire_connection(self):
+        with self._lock:
+            if self.active_connections < self.max_connections:
+                self.active_connections += 1
+                return f"Connection-{self.active_connections} acquired"
+            raise ConnectionError("Pool exhausted!")
+
+    def release_connection(self):
+        with self._lock:
+            if self.active_connections > 0:
+                self.active_connections -= 1`,
     comment: 'Singleton implementing double-checked locking with threading.Lock(). Tests pass 100%.',
     status: 'reviewed',
     score: 95,
-    feedback: 'Ajoyib yechim! Thread-safety to\'g\'ri ta\'minlangan, testlar to\'liq qamrab olgan.',
+    coins_awarded: 18,
+    feedback: 'Ajoyib yechim! Thread-safety to‘g‘ri ta’minlangan, testlar to‘liq qamrab olgan.',
     reviewed_at: '2026-10-16 09:30',
   },
   {
@@ -497,10 +532,32 @@ export const INITIAL_SUBMISSIONS: HomeworkSubmission[] = [
     student_name: 'Madina Karimova',
     student_code: 'AVL-2026-0102',
     submitted_at: '2026-10-15 22:15',
-    file_name: 'madina_db_pool.py',
-    comment: 'Metaclass yordamida Singleton yaratdim. Kod PEP8 standartiga mos.',
+    file_name: 'metaclass_pool.py',
+    code_language: 'python',
+    code_content: `class SingletonMeta(type):
+    """Thread-safe Singleton Metaclass"""
+    _instances = {}
+    _lock = threading.Lock()
+
+    def __call__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls not in cls._instances:
+                instance = super().__call__(*args, **kwargs)
+                cls._instances[cls] = instance
+        return cls._instances[cls]
+
+class DatabaseService(metaclass=SingletonMeta):
+    def __init__(self, host="localhost", port=5432):
+        self.host = host
+        self.port = port
+        self.connected_at = time.time()
+
+    def query(self, sql: str):
+        return f"Executing '{sql}' on {self.host}:{self.port}"`,
+    comment: 'Metaclass yordamida Singleton yaratdim. Kod PEP8 standartiga to‘liq mos.',
     status: 'reviewed',
     score: 98,
+    coins_awarded: 20,
     feedback: 'Metaclass orqali amalga oshirilgani juda toza va professional.',
     reviewed_at: '2026-10-16 09:45',
   },
@@ -512,7 +569,28 @@ export const INITIAL_SUBMISSIONS: HomeworkSubmission[] = [
     student_code: 'AVL-2026-0103',
     submitted_at: '2026-10-16 01:10',
     file_name: 'sardor_hw.py',
-    comment: 'Ustoz, lock qo\'shishda biroz tushunmovchilik bo\'ldi, ko\'rib bering.',
+    code_language: 'python',
+    code_content: `import threading
+
+class DatabasePool:
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def get_connection(self):
+        return "Connected to PostgreSQL on port 5432"
+
+# Test instance creation
+p1 = DatabasePool()
+p2 = DatabasePool()
+assert p1 is p2, "Instances must be identical!"
+print("Test passed successfully!")`,
+    comment: 'Ustoz, lock qo‘shishda biroz tushunmovchilik bo‘ldi, ko‘rib bersangiz xursand bo‘lardim.',
     status: 'submitted',
   },
   {
@@ -522,7 +600,31 @@ export const INITIAL_SUBMISSIONS: HomeworkSubmission[] = [
     student_name: 'Dilnoza Yusupova',
     student_code: 'AVL-2026-0104',
     submitted_at: '2026-10-16 02:20',
-    file_name: 'dilnoza_factory.zip',
+    file_name: 'factory_solution.py',
+    code_language: 'python',
+    code_content: `from abc import ABC, abstractmethod
+
+class DatabaseConnector(ABC):
+    @abstractmethod
+    def connect(self):
+        pass
+
+class PostgresConnector(DatabaseConnector):
+    def connect(self):
+        return "Connected to PostgreSQL engine"
+
+class MySQLConnector(DatabaseConnector):
+    def connect(self):
+        return "Connected to MySQL engine"
+
+class ConnectorFactory:
+    @staticmethod
+    def create(db_type: str) -> DatabaseConnector:
+        if db_type == "postgres":
+            return PostgresConnector()
+        elif db_type == "mysql":
+            return MySQLConnector()
+        raise ValueError(f"Unsupported db: {db_type}")`,
     comment: 'Factory va Singleton birlashtirilgan yechim.',
     status: 'submitted',
   },

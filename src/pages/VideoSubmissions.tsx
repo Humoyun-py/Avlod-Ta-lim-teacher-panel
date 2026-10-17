@@ -128,17 +128,37 @@ export const VideoSubmissions: React.FC = () => {
       {/* Title */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
-          <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
-            Dars video hisoboti (Video Submission)
+          <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
+            <span>Dars video hisoboti (Video Submission)</span>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+              Direktor nazorati
+            </span>
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Dars sifati nazorati uchun o‘tilgan mashg‘ulot videosi yoki havolasini O‘quv bo‘limi tekshiruviga topshirish
+            Dars sifati nazorati uchun o‘tilgan mashg‘ulot videosini O‘quv bo‘limi va Direktor tekshiruviga topshirish (Talabalarga ko‘rinmaydi)
           </p>
         </div>
 
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-600">
-          <ShieldCheck className="w-4 h-4 text-cyan-600" />
-          <span>Faqat tasdiqlangan video havolalar va MP4 fayllar</span>
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 font-semibold shadow-2xs">
+          <ShieldCheck className="w-4 h-4 text-amber-600" />
+          <span>🔒 Faqat Direktor tekshiruvi uchun (Studentlarga ko‘rinmaydi)</span>
+        </div>
+      </div>
+
+      {/* Info notice about Director panel */}
+      <div className="p-4 rounded-xl bg-slate-900 text-slate-200 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0 border border-cyan-500/30 font-bold">
+            <Video className="w-4 h-4" />
+          </div>
+          <div>
+            <p className="font-bold text-white">
+              Dars video hisoboti nima uchun kerak?
+            </p>
+            <p className="text-[11px] text-slate-300 mt-0.5">
+              Ushbu video hisobot o‘qituvchi darsni o‘tganligini tasdiqlash va dars metodikasi sifatini baholash uchun xizmat qiladi. U <strong>hech qachon talabalarga ko‘rinmaydi</strong>. Barcha hisobotlar to‘g‘ridan-to‘g‘ri <strong>Direktor paneliga</strong> yuboriladi va direktor tomonidan tasdiqlanadi.
+            </p>
+          </div>
         </div>
       </div>
 

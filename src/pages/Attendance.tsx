@@ -19,12 +19,16 @@ import {
   Sparkles,
   ExternalLink,
   ChevronDown,
+  Play,
+  Flame,
+  BookOpen,
 } from 'lucide-react';
 import { teacherService } from '../services/teacherService';
-import { Lesson, Student, AttendanceStatus, AttendanceRecord } from '../types';
+import { Lesson, Student, AttendanceStatus, AttendanceRecord, Group } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { AwardCoinsModal } from '../components/modals/AwardCoinsModal';
 import { StudentCoinHistoryModal } from '../components/modals/StudentCoinHistoryModal';
+import { CompleteLessonModal } from '../components/modals/CompleteLessonModal';
 
 interface StudentAttendanceItem {
   status: AttendanceStatus | null;
@@ -37,6 +41,9 @@ export const Attendance: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
 
+  // Selection states: Group first, then Lesson & Darsni boshlash
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string>('');
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [selectedLessonId, setSelectedLessonId] = useState<string>('');
   const [students, setStudents] = useState<Student[]>([]);
@@ -44,8 +51,10 @@ export const Attendance: React.FC = () => {
   const [existingRecords, setExistingRecords] = useState<AttendanceRecord[]>([]);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isStartingLesson, setIsStartingLesson] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [isCompleteModalOpen, setIsCompleteModalOpen] = useState(false);
   const [autoAwardCoins, setAutoAwardCoins] = useState(true);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -61,21 +70,52 @@ export const Attendance: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    loadLessons();
+    loadInitialData();
   }, []);
 
-  const loadLessons = async () => {
+  const loadInitialData = async () => {
     setIsLoading(true);
     try {
-      const allLessons = await teacherService.getSchedule();
+      const [allGroups, allLessons] = await Promise.all([
+        teacherService.getGroups(),
+        teacherService.getSchedule(),
+      ]);
+      setGroups(allGroups);
       setLessons(allLessons);
 
       const qLessonId = searchParams.get('lessonId');
-      if (qLessonId && allLessons.some((l) => l.id === qLessonId)) {
-        setSelectedLessonId(qLessonId);
-        loadLessonStudentsAndAttendance(qLessonId, allLessons);
+      const qGroupId = searchParams.get('groupId');
+
+      if (qLessonId) {
+        const foundLesson = allLessons.find((l) => l.id === qLessonId);
+        if (foundLesson) {
+          setSelectedGroupId(foundLesson.group_id);
+          setSelectedLessonId(foundLesson.id);
+          await loadLessonStudentsAndAttendance(foundLesson.id, allLessons, foundLesson.group_id);
+          return;
+        }
+      }
+
+      if (qGroupId && allGroups.some((g) => g.id === qGroupId)) {
+        setSelectedGroupId(qGroupId);
+        const groupLessons = allLessons.filter((l) => l.group_id === qGroupId);
+        const activeOrPlanned =
+          groupLessons.find((l) => l.status === 'in_progress') ||
+          groupLessons.find((l) => l.status === 'planned') ||
+          groupLessons[0];
+
+        if (activeOrPlanned) {
+          setSelectedLessonId(activeOrPlanned.id);
+          await loadLessonStudentsAndAttendance(activeOrPlanned.id, allLessons, qGroupId);
+        } else {
+          // Load students directly
+          const groupStudents = await teacherService.getStudents(qGroupId);
+          setStudents(groupStudents);
+          initEmptyAttendance(groupStudents);
+        }
       } else {
-        // Initially no lesson selected, user chooses manually
+        // Nothing selected by default
+        setSelectedGroupId('');
         setSelectedLessonId('');
         setStudents([]);
         setAttendanceState({});
@@ -86,50 +126,203 @@ export const Attendance: React.FC = () => {
     }
   };
 
-  const loadLessonStudentsAndAttendance = async (lessonId: string, lessonList = lessons) => {
+  const initEmptyAttendance = (studentList: Student[]) => {
+    const initialMap: Record<string, StudentAttendanceItem> = {};
+    // Every student starts completely blank / unselected (status: null)
+    studentList.forEach((student) => {
+      initialMap[student.id] = {
+        status: null,
+        lateMinutes: 5,
+        notes: '',
+      };
+    });
+    setAttendanceState(initialMap);
+  };
+
+  const loadLessonStudentsAndAttendance = async (
+    lessonId: string,
+    lessonList = lessons,
+    groupId = selectedGroupId
+  ) => {
     const lesson = lessonList.find((l) => l.id === lessonId);
-    if (!lesson) return;
+    const targetGroupId = lesson?.group_id || groupId;
+    if (!targetGroupId) return;
 
     setIsLoading(true);
     try {
       const [groupStudents, existing] = await Promise.all([
-        teacherService.getStudents(lesson.group_id),
-        teacherService.getLessonAttendance(lessonId),
+        teacherService.getStudents(targetGroupId),
+        lessonId ? teacherService.getLessonAttendance(lessonId) : Promise.resolve([]),
       ]);
 
       setStudents(groupStudents);
       setExistingRecords(existing);
 
-      const initialMap: Record<string, StudentAttendanceItem> = {};
-
-      // User requirement: Every student starts completely blank / unselected (status: null)
-      // The teacher selects the status manually for each student.
-      groupStudents.forEach((student) => {
-        initialMap[student.id] = {
-          status: null,
-          lateMinutes: 5,
-          notes: '',
-        };
-      });
-
-      setAttendanceState(initialMap);
+      // User requirement: Davomat keyingi darsgacha turishi kerak.
+      // Agar ushbu dars uchun davomat avval saqlangan bo'lsa (existing > 0), o'sha saqlangan davomat ko'rinib turadi!
+      // Agar yangi dars bo'lsa (existing == 0), barcha talabalar tanlanmagan (status: null) bo'lib ochiladi.
+      if (existing && existing.length > 0) {
+        const restoredMap: Record<string, StudentAttendanceItem> = {};
+        groupStudents.forEach((student) => {
+          const found = existing.find((e) => e.student_id === student.id);
+          if (found) {
+            restoredMap[student.id] = {
+              status: found.status,
+              lateMinutes: found.late_minutes ?? 5,
+              notes: found.notes || '',
+            };
+          } else {
+            restoredMap[student.id] = {
+              status: null,
+              lateMinutes: 5,
+              notes: '',
+            };
+          }
+        });
+        setAttendanceState(restoredMap);
+      } else {
+        initEmptyAttendance(groupStudents);
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleLessonChange = (newLessonId: string) => {
-    setSelectedLessonId(newLessonId);
+  // Group selector change
+  const handleGroupChange = async (groupId: string) => {
+    setSelectedGroupId(groupId);
     setSuccessMessage(null);
     setErrorMessage(null);
     setCoinRewardAlert(null);
-    if (newLessonId) {
-      loadLessonStudentsAndAttendance(newLessonId);
-    } else {
+
+    if (!groupId) {
+      setSelectedLessonId('');
       setStudents([]);
       setAttendanceState({});
       setExistingRecords([]);
+      return;
     }
+
+    const groupLessons = lessons.filter((l) => l.group_id === groupId);
+    const activeOrPlanned =
+      groupLessons.find((l) => l.status === 'in_progress') ||
+      groupLessons.find((l) => l.status === 'planned') ||
+      groupLessons[0];
+
+    if (activeOrPlanned) {
+      setSelectedLessonId(activeOrPlanned.id);
+      await loadLessonStudentsAndAttendance(activeOrPlanned.id, lessons, groupId);
+    } else {
+      setSelectedLessonId('');
+      const groupStudents = await teacherService.getStudents(groupId);
+      setStudents(groupStudents);
+      initEmptyAttendance(groupStudents);
+      setExistingRecords([]);
+    }
+  };
+
+  // Specific lesson selector change within the selected group
+  const handleLessonChange = (lessonId: string) => {
+    setSelectedLessonId(lessonId);
+    setSuccessMessage(null);
+    setErrorMessage(null);
+    setCoinRewardAlert(null);
+    if (lessonId) {
+      loadLessonStudentsAndAttendance(lessonId);
+    }
+  };
+
+  // "Darsni boshlash" (Start Lesson) action
+  const handleStartLesson = async () => {
+    if (!selectedGroupId) {
+      setErrorMessage('Iltimos, avval guruhni tanlang.');
+      return;
+    }
+
+    setIsStartingLesson(true);
+    setErrorMessage(null);
+
+    try {
+      let targetLessonId = selectedLessonId;
+
+      // If no lesson was created for this group yet, create one for today
+      if (!targetLessonId) {
+        const group = groups.find((g) => g.id === selectedGroupId);
+        const newLesson = await teacherService.createLesson({
+          group_id: selectedGroupId,
+          topic: `${group?.course_name || 'Dars'}: Amaliy mashg‘ulot`,
+        });
+        targetLessonId = newLesson.id;
+      }
+
+      const updatedLesson = await teacherService.startLesson(targetLessonId);
+
+      // Refresh schedule
+      const updatedSchedule = await teacherService.getSchedule();
+      setLessons(updatedSchedule);
+      setSelectedLessonId(updatedLesson.id);
+
+      setSuccessMessage(
+        `Dars muvaffaqiyatli boshlandi! Guruh: "${updatedLesson.group_name}". Talabalar davomati ochildi, endi davomat olishingiz va coinlar berishingiz mumkin.`
+      );
+
+      // Load group students with unselected status
+      await loadLessonStudentsAndAttendance(updatedLesson.id, updatedSchedule, selectedGroupId);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Darsni boshlashda xatolik yuz berdi.');
+    } finally {
+      setIsStartingLesson(false);
+    }
+  };
+
+  // "Keyingi darsni boshlash" - creates/starts the next lesson and gives clean unselected attendance
+  const handleStartNextLesson = async () => {
+    if (!selectedGroupId) {
+      setErrorMessage('Iltimos, avval guruhni tanlang.');
+      return;
+    }
+
+    setIsStartingLesson(true);
+    setErrorMessage(null);
+
+    try {
+      const group = groups.find((g) => g.id === selectedGroupId);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const newLesson = await teacherService.createLesson({
+        group_id: selectedGroupId,
+        topic: `${group?.course_name || 'Dars'}: Yangi amaliy mashg‘ulot`,
+        date: todayStr,
+      });
+
+      const started = await teacherService.startLesson(newLesson.id);
+      const updatedSchedule = await teacherService.getSchedule();
+      setLessons(updatedSchedule);
+      setSelectedLessonId(started.id);
+      setExistingRecords([]);
+
+      const groupStudents = await teacherService.getStudents(selectedGroupId);
+      setStudents(groupStudents);
+      initEmptyAttendance(groupStudents);
+
+      setSuccessMessage(
+        `Keyingi yangi dars boshlandi! Guruh: "${group?.name}". Yangi dars uchun barcha talabalar tanlanmagan holatda turibdi, endi yangi davomat olishingiz mumkin.`
+      );
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Keyingi darsni boshlashda xatolik yuz berdi.');
+    } finally {
+      setIsStartingLesson(false);
+    }
+  };
+
+  // "Darsni tugatish" (Complete Lesson) handler
+  const handleLessonCompleted = async (updatedLesson: Lesson) => {
+    setIsCompleteModalOpen(false);
+    const updatedSchedule = await teacherService.getSchedule();
+    setLessons(updatedSchedule);
+    setSelectedLessonId(updatedLesson.id);
+    setSuccessMessage(
+      `Dars muvaffaqiyatli tugatildi! Dars hisoboti O‘quv bo‘limiga yuborildi va davomat keyingi darsgacha saqlanib turadi.`
+    );
   };
 
   const handleStatusChange = (studentId: string, status: AttendanceStatus) => {
@@ -292,7 +485,10 @@ export const Attendance: React.FC = () => {
   };
 
   const handleSubmitAttendance = async () => {
-    if (!selectedLessonId) return;
+    if (!selectedLessonId) {
+      setErrorMessage('Davomatni saqlash uchun dars mavjud bo‘lishi lozim.');
+      return;
+    }
 
     const unmarked = students.filter((s) => !attendanceState[s.id]?.status);
     if (unmarked.length > 0) {
@@ -319,8 +515,8 @@ export const Attendance: React.FC = () => {
       const res = await teacherService.submitLessonAttendance(selectedLessonId, payload);
       setIsSubmitting(false);
 
-      // Refresh student list to reflect new coin balances
-      const updatedStudents = await teacherService.getStudents(currentLesson?.group_id);
+      // Refresh students to reflect newly awarded coins
+      const updatedStudents = await teacherService.getStudents(selectedGroupId);
       setStudents(updatedStudents);
 
       let msg = `Davomat muvaffaqiyatli saqlandi! (${res.count} nafar talaba bo‘yicha qayd etildi).`;
@@ -336,6 +532,8 @@ export const Attendance: React.FC = () => {
     }
   };
 
+  const currentGroup = groups.find((g) => g.id === selectedGroupId);
+  const groupLessons = lessons.filter((l) => l.group_id === selectedGroupId);
   const currentLesson = lessons.find((l) => l.id === selectedLessonId);
 
   // Summary counts and Coin distribution statistics
@@ -391,14 +589,22 @@ export const Attendance: React.FC = () => {
         onBalanceUpdated={handleBalanceUpdatedInModal}
       />
 
+      {/* Complete Lesson Modal (Darsni tugatish) */}
+      <CompleteLessonModal
+        lesson={currentLesson || null}
+        isOpen={isCompleteModalOpen}
+        onClose={() => setIsCompleteModalOpen(false)}
+        onCompleted={handleLessonCompleted}
+      />
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-slate-200 pb-5">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 tracking-tight">
-            Davomat nazorati va Rag‘batlantirish
+            Davomat va Dars nazorati
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Guruh talabalari davomati, kechikish vaqti nazorati hamda qoidaga binoan tangalar (coin) taqsimlash
+            Guruhni tanlang, darsni boshlang hamda talabalarga qoidaga muvofiq coinlar taqsimlang
           </p>
         </div>
 
@@ -408,47 +614,105 @@ export const Attendance: React.FC = () => {
         </div>
       </div>
 
-      {/* Lesson Selector Bar */}
+      {/* Group & Lesson Selector Bar */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex-1 max-w-xl">
-          <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wide">
-            Darsni tanlang:
+        {/* Step 1: Select Group */}
+        <div className="flex-1 max-w-sm">
+          <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+            <Users2 className="w-3.5 h-3.5 text-cyan-600" />
+            <span>1. Guruhni tanlang:</span>
           </label>
           <select
-            value={selectedLessonId}
-            onChange={(e) => handleLessonChange(e.target.value)}
+            value={selectedGroupId}
+            onChange={(e) => handleGroupChange(e.target.value)}
             className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-xs text-slate-900 bg-white font-semibold focus:outline-hidden focus:ring-1 focus:ring-cyan-500 shadow-xs cursor-pointer"
           >
-            <option value="">-- Darsni tanlang ({lessons.length} ta dars mavjud) --</option>
-            {lessons.map((lesson) => (
-              <option key={lesson.id} value={lesson.id}>
-                {lesson.date} · {lesson.start_time} - {lesson.end_time} · {lesson.group_name} ({lesson.course_name})
+            <option value="">-- Guruhni tanlang ({groups.length} ta guruh) --</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name} · {group.course_name} ({group.student_count} nafar talaba)
               </option>
             ))}
           </select>
         </div>
 
+        {/* Step 2: Lesson within Group */}
+        {selectedGroupId && groupLessons.length > 0 && (
+          <div className="flex-1 max-w-md">
+            <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-cyan-600" />
+              <span>2. Darsni tanlang:</span>
+            </label>
+            <select
+              value={selectedLessonId}
+              onChange={(e) => handleLessonChange(e.target.value)}
+              className="w-full px-3 py-2.5 rounded-lg border border-slate-300 text-xs text-slate-900 bg-white font-semibold focus:outline-hidden focus:ring-1 focus:ring-cyan-500 shadow-xs cursor-pointer"
+            >
+              {groupLessons.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.date} · {l.start_time}-{l.end_time} · {l.topic || 'Dars'} (
+                  {l.status === 'in_progress'
+                    ? '🟢 Dars faol'
+                    : l.status === 'planned'
+                    ? 'Rejalashtirilgan'
+                    : 'Yakunlangan'}
+                  )
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Lesson meta badges if selected */}
         {currentLesson && (
-          <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 font-medium">
-            <div className="flex items-center gap-1.5">
-              <Calendar className="w-4 h-4 text-cyan-600" />
-              <span className="font-mono">{currentLesson.date}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-cyan-600" />
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 font-medium">
+            <div className="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1.5 rounded-md border border-slate-200">
+              <Clock className="w-3.5 h-3.5 text-cyan-600" />
               <span className="font-mono">
                 {currentLesson.start_time} - {currentLesson.end_time}
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <MapPin className="w-4 h-4 text-cyan-600" />
+            <div className="flex items-center gap-1.5 bg-slate-50 px-2.5 py-1.5 rounded-md border border-slate-200">
+              <MapPin className="w-3.5 h-3.5 text-cyan-600" />
               <span>{currentLesson.room}</span>
             </div>
           </div>
         )}
       </div>
 
-      {/* Coin Reward Success Notification Banner */}
+      {/* Success Notification Banner */}
+      {successMessage && (
+        <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span className="font-semibold">{successMessage}</span>
+          </div>
+          <button
+            onClick={() => setSuccessMessage(null)}
+            className="text-emerald-700 hover:text-emerald-900 text-xs font-bold cursor-pointer"
+          >
+            Yopish
+          </button>
+        </div>
+      )}
+
+      {/* Error notification */}
+      {errorMessage && (
+        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+            <span className="font-semibold">{errorMessage}</span>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="text-rose-700 hover:text-rose-900 text-xs font-bold cursor-pointer"
+          >
+            Yopish
+          </button>
+        </div>
+      )}
+
+      {/* Coin Reward Banner */}
       {coinRewardAlert && (
         <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between shadow-xs">
           <div className="flex items-center gap-3">
@@ -457,7 +721,7 @@ export const Attendance: React.FC = () => {
             </div>
             <div>
               <p className="font-bold text-sm">
-                Talaba {coinRewardAlert.studentName} ga +{coinRewardAlert.amount} coin muvaffaqiyatli berildi!
+                Talaba {coinRewardAlert.studentName} ga +{coinRewardAlert.amount} coin berildi!
               </p>
               <p className="text-[11px] text-amber-800 mt-0.5">
                 Sabab: {coinRewardAlert.reason} · Yangi balans:{' '}
@@ -474,53 +738,164 @@ export const Attendance: React.FC = () => {
         </div>
       )}
 
-      {/* Attendance Success / Error notification */}
-      {successMessage && (
-        <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-center justify-between shadow-xs">
-          <div className="flex items-center gap-2.5">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
-            <span className="font-semibold">{successMessage}</span>
-          </div>
-          <button
-            onClick={() => setSuccessMessage(null)}
-            className="text-emerald-700 hover:text-emerald-900 text-xs font-bold cursor-pointer"
-          >
-            Yopish
-          </button>
-        </div>
-      )}
-
-      {errorMessage && (
-        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between shadow-xs">
-          <div className="flex items-center gap-2.5">
-            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
-            <span className="font-semibold">{errorMessage}</span>
-          </div>
-          <button
-            onClick={() => setErrorMessage(null)}
-            className="text-rose-700 hover:text-rose-900 text-xs font-bold cursor-pointer"
-          >
-            Yopish
-          </button>
-        </div>
-      )}
-
-      {/* If no lesson is selected yet */}
-      {!selectedLessonId ? (
+      {/* CASE 1: No Group Selected */}
+      {!selectedGroupId ? (
         <div className="bg-white rounded-xl border border-dashed border-slate-300 p-12 text-center shadow-xs">
           <div className="w-16 h-16 rounded-2xl bg-cyan-50 border border-cyan-100 text-cyan-600 flex items-center justify-center mx-auto mb-4 shadow-xs">
-            <ClipboardCheck className="w-8 h-8" />
+            <Users2 className="w-8 h-8" />
           </div>
-          <h3 className="text-base font-bold text-slate-800 mb-1">Dars tanlanmagan</h3>
+          <h3 className="text-base font-bold text-slate-800 mb-1">Guruh tanlanmagan</h3>
           <p className="text-xs text-slate-500 max-w-md mx-auto mb-5 leading-relaxed">
-            Talabalar davomatini olish va ularga coin berish uchun yuqoridagi <strong>&quot;Darsni tanlang&quot;</strong> menyusidan o‘zingizga biriktirilgan darsni tanlang.
+            Darsni boshlash va talabalar davomatini olish uchun yuqoridagi{' '}
+            <strong>&quot;1. Guruhni tanlang&quot;</strong> menyusidan guruhni tanlang.
           </p>
           <div className="inline-flex items-center gap-2 text-xs font-semibold text-cyan-700 bg-cyan-50 px-3.5 py-1.5 rounded-lg border border-cyan-200">
-            <span>Yuqoridagi ro‘yxatdan guruh va darsni tanlang</span>
+            <span>Yuqoridagi ro‘yxatdan guruhni tanlang</span>
           </div>
         </div>
       ) : (
         <>
+          {/* STEP: Darsni Boshlash (Start Lesson) Card / In-Progress Indicator */}
+          {(!currentLesson || currentLesson.status === 'planned') ? (
+            <div className="bg-linear-to-r from-emerald-500/10 via-teal-500/5 to-white border-2 border-emerald-400/80 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5">
+              <div className="flex items-start sm:items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-md">
+                  <Play className="w-6 h-6 fill-white translate-x-0.5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      Rejalashtirilgan dars
+                    </span>
+                    <span className="text-xs text-slate-500 font-mono">
+                      {currentLesson ? `${currentLesson.start_time} - ${currentLesson.end_time}` : 'Bugungi dars'}
+                    </span>
+                  </div>
+                  <h3 className="text-base font-bold text-slate-900 mt-1">
+                    {currentLesson?.topic || `${currentGroup?.name} amaliy mashg‘uloti`}
+                  </h3>
+                  <p className="text-xs text-slate-600 mt-0.5">
+                    Guruh: <strong>{currentGroup?.name}</strong> · Talabalar: <strong>{students.length} nafar</strong>. Darsni boshlaganingizdan so‘ng talabalar davomati ochiladi.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleStartLesson}
+                disabled={isStartingLesson}
+                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-sm transition-all shadow-md hover:shadow-lg flex items-center gap-2.5 cursor-pointer shrink-0 disabled:opacity-50"
+              >
+                <Play className="w-5 h-5 fill-white" />
+                <span>{isStartingLesson ? 'Dars boshlanmoqda...' : 'Darsni boshlash'}</span>
+              </button>
+            </div>
+          ) : currentLesson.status === 'in_progress' ? (
+            <div className="bg-linear-to-r from-emerald-500/15 via-emerald-500/5 to-white border border-emerald-400 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="relative flex items-center justify-center">
+                  <span className="animate-ping absolute inline-flex h-4 w-4 rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-600"></span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-extrabold text-emerald-950 uppercase tracking-wide text-xs">
+                      Jonli dars davom etmoqda
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                      Faol dars
+                    </span>
+                  </div>
+                  <p className="text-slate-700 font-semibold mt-0.5">
+                    {currentLesson.topic} ({currentGroup?.name})
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <div className="flex items-center gap-2 text-slate-600 font-mono text-[11px] bg-white px-3 py-1.5 rounded-lg border border-emerald-200">
+                  <span>Vaqt: {currentLesson.start_time} - {currentLesson.end_time}</span>
+                  <span>·</span>
+                  <span>Xona: {currentLesson.room}</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsCompleteModalOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer shrink-0"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Darsni tugatish</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-slate-700 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-slate-900 text-sm">
+                      Ushbu dars yakunlangan ({currentLesson.completed_at || currentLesson.date})
+                    </span>
+                    <span className="px-2 py-0.5 rounded font-mono font-semibold text-[10px] bg-slate-200 text-slate-700">
+                      Davomat saqlangan
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Mavzu: <strong>{currentLesson.topic}</strong> · Keyingi dars boshlanguncha ushbu dars davomati ko‘rinib turadi
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleStartNextLesson}
+                disabled={isStartingLesson}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-xs flex items-center gap-2 cursor-pointer shrink-0 disabled:opacity-50"
+              >
+                <Play className="w-4 h-4 fill-white" />
+                <span>{isStartingLesson ? 'Boshlanmoqda...' : 'Keyingi darsni boshlash'}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Saved Attendance Alert Banner if attendance exists */}
+          {existingRecords.length > 0 && (
+            <div className="p-3.5 rounded-xl bg-cyan-50 border border-cyan-200 text-cyan-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-cyan-600 shrink-0" />
+                <div>
+                  <span className="font-bold">
+                    ✓ Ushbu dars davomati to‘liq saqlangan ({existingRecords.length} nafar talaba bo‘yicha qayd etilgan)
+                  </span>
+                  <span className="text-[11px] text-cyan-800 block sm:inline sm:ml-2">
+                    Keyingi dars boshlanguncha ma’lumotlar saqlanadi.
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleClearAll}
+                  className="px-2.5 py-1 rounded-lg border border-cyan-300 bg-white text-cyan-800 hover:bg-cyan-100 font-semibold text-[11px] cursor-pointer"
+                >
+                  Qayta belgilash (Bo‘shatish)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleStartNextLesson}
+                  className="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <Play className="w-3 h-3 fill-white" />
+                  <span>Keyingi darsni boshlash</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Official Coin Rules Notice Banner */}
           <div className="bg-linear-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-300/80 rounded-xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs shadow-xs">
             <div className="flex items-start sm:items-center gap-3">
@@ -530,7 +905,7 @@ export const Attendance: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-extrabold text-slate-900 text-sm">
-                    Avlod Ta’lim — Davomat bo‘yicha tangalar qoidasi:
+                    Avlod Ta’lim — Davomat tangalari qoidasi:
                   </span>
                   <span className="px-2 py-0.5 rounded-full bg-amber-200/70 text-amber-900 font-bold text-[10px]">
                     Avtomatlashtirilgan
@@ -640,7 +1015,7 @@ export const Attendance: React.FC = () => {
               <div className="flex items-center gap-2">
                 <Users2 className="w-4 h-4 text-cyan-600" />
                 <h2 className="font-bold text-slate-900 text-sm">
-                  Guruh talabalari ({students.length} nafar)
+                  {currentGroup?.name} talabalari ({students.length} nafar)
                 </h2>
                 {summaryCounts.unmarked > 0 && (
                   <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
@@ -859,7 +1234,7 @@ export const Attendance: React.FC = () => {
                             placeholder={
                               currentStatus === 'late'
                                 ? `${lateMinutes} daqiqa kechikdi...`
-                                : 'masalan: uy vazifasini topshirdi...'
+                                : 'masalan: faol qatnashmoqda...'
                             }
                             className="w-full max-w-[170px] px-2 py-1 rounded border border-slate-200 text-slate-800 text-xs focus:outline-hidden focus:ring-1 focus:ring-cyan-500"
                           />
@@ -931,6 +1306,17 @@ export const Attendance: React.FC = () => {
                   <Check className="w-4 h-4" />
                   <span>{isSubmitting ? 'Saqlanmoqda...' : 'Davomatni tasdiqlash va saqlash'}</span>
                 </button>
+
+                {currentLesson?.status === 'in_progress' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCompleteModalOpen(true)}
+                    className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-colors shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Darsni tugatish</span>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -947,7 +1333,7 @@ export const Attendance: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-base font-bold">Davomat va Tangalarni tasdiqlaysizmi?</h3>
-                <p className="text-xs text-slate-500 font-mono">{currentLesson?.group_name}</p>
+                <p className="text-xs text-slate-500 font-mono">{currentGroup?.name} · {currentLesson?.topic}</p>
               </div>
             </div>
 

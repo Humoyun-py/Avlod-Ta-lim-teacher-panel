@@ -126,6 +126,8 @@ export interface Homework {
   title: string;
   description: string;
   deadline: string;
+  requires_code?: boolean;
+  allowed_file_types?: string[];
   attachments?: { name: string; url: string; size: string }[];
   total_students: number;
   submissions_count: number;
@@ -141,10 +143,14 @@ export interface HomeworkSubmission {
   student_code: string;
   submitted_at: string;
   file_name?: string;
+  file_size?: string;
   file_url?: string;
+  code_content?: string;
+  code_language?: string;
   comment?: string;
   status: 'submitted' | 'reviewed';
   score?: number; // 0-100
+  coins_awarded?: number; // 1-20 coins
   feedback?: string;
   reviewed_at?: string;
 }

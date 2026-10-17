@@ -146,6 +146,43 @@ class FrontendDataStore {
     this.save();
   }
 
+  public createLesson(data: {
+    group_id: string;
+    topic?: string;
+    date?: string;
+    start_time?: string;
+    end_time?: string;
+    room?: string;
+  }): Lesson {
+    const group = this.groups.find(g => g.id === data.group_id);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const newLesson: Lesson = {
+      id: `lsn-${Date.now()}`,
+      group_id: data.group_id,
+      group_name: group?.name || 'Group',
+      course_name: group?.course_name || 'Course',
+      date: data.date || todayStr,
+      start_time: data.start_time || '14:00',
+      end_time: data.end_time || '16:00',
+      room: data.room || group?.room || 'Lab 101',
+      status: 'planned',
+      topic: data.topic || `${group?.course_name || 'Dars'}: Yangi amaliy mashg‘ulot`,
+      attendance_submitted: false,
+    };
+    this.lessons.unshift(newLesson);
+    this.save();
+    return newLesson;
+  }
+
+  public startLesson(lessonId: string) {
+    const lesson = this.lessons.find(l => l.id === lessonId);
+    if (!lesson) throw new Error('Dars topilmadi');
+    lesson.status = 'in_progress';
+    (lesson as any).started_at = new Date().toISOString().replace('T', ' ').slice(0, 16);
+    this.save();
+    return lesson;
+  }
+
   public completeLesson(lessonId: string, details: {
     topic: string;
     summary: string;
@@ -194,7 +231,45 @@ class FrontendDataStore {
     return newHw;
   }
 
-  public reviewSubmission(submissionId: string, score: number, feedback: string) {
+  public submitHomework(data: {
+    homework_id: string;
+    student_id: string;
+    file_name: string;
+    code_content: string;
+    code_language?: string;
+    file_size?: string;
+    comment?: string;
+  }): HomeworkSubmission {
+    const student = this.students.find(s => s.id === data.student_id);
+    const hw = this.homework.find(h => h.id === data.homework_id);
+    const newSub: HomeworkSubmission = {
+      id: `sub-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      homework_id: data.homework_id,
+      student_id: data.student_id,
+      student_name: student?.full_name || 'Talaba',
+      student_code: student?.student_code || 'AVL-0000',
+      submitted_at: new Date().toISOString().replace('T', ' ').slice(0, 16),
+      file_name: data.file_name,
+      file_size: data.file_size || '4.2 KB',
+      code_content: data.code_content,
+      code_language: data.code_language || 'python',
+      comment: data.comment,
+      status: 'submitted',
+    };
+    this.submissions.unshift(newSub);
+    if (hw) {
+      hw.submissions_count = this.submissions.filter(s => s.homework_id === hw.id).length;
+    }
+    this.save();
+    return newSub;
+  }
+
+  public reviewSubmission(
+    submissionId: string,
+    score: number,
+    feedback: string,
+    coins?: number
+  ) {
     const sub = this.submissions.find(s => s.id === submissionId);
     if (!sub) throw new Error('Topshiriq topilmadi');
     sub.status = 'reviewed';
@@ -207,6 +282,22 @@ class FrontendDataStore {
       hw.reviewed_count = this.submissions.filter(
         s => s.homework_id === hw.id && s.status === 'reviewed'
       ).length;
+    }
+
+    // Award 1 to 20 coins according to teacher's evaluation
+    if (coins && coins > 0) {
+      const validCoins = Math.min(20, Math.max(1, Math.round(coins)));
+      sub.coins_awarded = validCoins;
+      try {
+        this.awardCoins({
+          student_id: sub.student_id,
+          amount: validCoins,
+          reason: `Uy vazifasi uchun rag‘bat: "${hw?.title || 'Vazifa'}" (${score} ball)`,
+          comment: feedback || undefined,
+        });
+      } catch {
+        // Continue if coin already awarded
+      }
     }
 
     this.save();
@@ -513,6 +604,21 @@ export const teacherService = {
     return localStore.completeLesson(lessonId, details);
   },
 
+  async startLesson(lessonId: string): Promise<Lesson> {
+    return localStore.startLesson(lessonId);
+  },
+
+  async createLesson(data: {
+    group_id: string;
+    topic?: string;
+    date?: string;
+    start_time?: string;
+    end_time?: string;
+    room?: string;
+  }): Promise<Lesson> {
+    return localStore.createLesson(data);
+  },
+
   // 7. Video Submission
   async submitLessonVideo(lessonId: string, videoUrl: string): Promise<Lesson> {
     return localStore.submitVideo(lessonId, videoUrl);
@@ -545,12 +651,25 @@ export const teacherService = {
     return localStore.getSubmissions().filter(s => s.homework_id === homeworkId);
   },
 
+  async submitHomework(data: {
+    homework_id: string;
+    student_id: string;
+    file_name: string;
+    code_content: string;
+    code_language?: string;
+    file_size?: string;
+    comment?: string;
+  }): Promise<HomeworkSubmission> {
+    return localStore.submitHomework(data);
+  },
+
   async reviewSubmission(
     submissionId: string,
     score: number,
-    feedback: string
+    feedback: string,
+    coins?: number
   ): Promise<HomeworkSubmission> {
-    return localStore.reviewSubmission(submissionId, score, feedback);
+    return localStore.reviewSubmission(submissionId, score, feedback, coins);
   },
 
   // 9. Notifications
